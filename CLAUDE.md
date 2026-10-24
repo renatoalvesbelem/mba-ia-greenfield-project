@@ -12,30 +12,40 @@ This is a monorepo with two main areas:
 
 - `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Contains modules for users, channels, videos, comments, etc.
 - `docs/` — Project documentation, architecture diagrams, and planning.
-- `next-frontend/` (Next.js) — not yet initialized
+- `next-frontend/` (Next.js) — Frontend web app (Phases 01–02: setup, auth, users and channels). Video UI is out of scope until a later phase.
 
 ## Architecture (C4 Container Diagram)
 
 See `docs/diagrams/software-arch.mermaid` for the full diagram. Key containers:
 
 - **Frontend** (Next.js) → calls API via REST, streams from Object Storage
-- **API** (Nest.js) → business rules, auth, reads/writes DB, uploads to storage, publishes jobs to queue, sends emails
-- **Video Worker** (FFmpeg) → consumes jobs from queue, processes videos, updates DB and storage
+- **API** (Nest.js) → business rules, auth, reads/writes DB, orchestrates direct-to-storage uploads (presigned multipart), publishes jobs to queue, sends emails
+- **Video Worker** (FFmpeg) → `src/worker.ts` in `nestjs-project/`, runs as the `video-worker` Compose service; consumes jobs from queue, extracts metadata and thumbnail, updates DB and storage
 - **Database** (PostgreSQL) → users, channels, videos, comments, likes
-- **Object Storage** (S3/MinIO) → video files and thumbnails
-- **Message Queue** (TBD) → video processing job queue
+- **Object Storage** (S3-compatible — MinIO locally, `minio` service) → video files and thumbnails under `videos/{videoId}/`
+- **Message Queue** (Redis + BullMQ, `redis` service) → `video-processing` queue
 - **Email Service** (SMTP) → account confirmation and password recovery
 
 ## Docker Networking
 
 This project runs entirely in Docker containers. When configuring connections between services (database, cache, queue, etc.), **always use the Docker Compose service name** as the host — never `localhost` or `127.0.0.1`.
 
-Inside a container, `localhost` refers to the container itself, not the host machine or other containers. Services communicate through the Docker Compose network using their service names (e.g., `db`, `nestjs-api`).
+Inside a container, `localhost` refers to the container itself, not the host machine or other containers. Services communicate through the Docker Compose network using their service names (e.g., `db`, `nestjs-api`, `minio`, `redis`).
 
 - **Correct:** `DB_HOST=db` (the Compose service name)
 - **Wrong:** `DB_HOST=localhost`
 
 This applies to all environment variables, configuration files, and code that references service hosts.
+
+## Videos (Phase 03)
+
+Implemented in `nestjs-project/` — see `nestjs-project/CLAUDE.md` → "Videos (Phase 03)" for module layout, endpoints, env vars and error codes. Summary:
+
+- **Upload** is direct to the object storage via S3 multipart presigned URLs: the API only creates the draft (`POST /videos`), signs part URLs, lists parts and completes/aborts the upload. Files up to 10 GiB never pass through the API process.
+- **Processing** is asynchronous: completing an upload enqueues `process-video` on the BullMQ `video-processing` queue (Redis); the `video-worker` container runs `ffprobe`/`ffmpeg` against a presigned URL, stores `videos/{id}/thumbnail.jpg` and flips the row to `ready` (or `failed` after 3 attempts).
+- **Status lifecycle** lives in `videos.status`: `draft → processing → ready | failed`. Visibility/publication is a Phase 04 concern and will be a separate column.
+- **Playback/download** use `GET /videos/:publicId/stream`, `/download`, `/thumbnail` → `302` to presigned `GetObject` URLs; range (`206`) is served by the storage. `public_id` (11 chars) is the unique URL identifier.
+- Decisions: `docs/decisions/technical-decisions-phase-03-videos.md`; plan and progress: `docs/phases/phase-03-videos/`.
 
 ## Working Principles
 

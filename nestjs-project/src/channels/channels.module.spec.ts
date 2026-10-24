@@ -1,19 +1,16 @@
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { RefreshToken } from '../auth/entities/refresh-token.entity';
-import { VerificationToken } from '../auth/entities/verification-token.entity';
-import { User } from '../users/entities/user.entity';
-import { createTestDataSource } from '../test/create-test-data-source';
-import { Channel } from './entities/channel.entity';
+import {
+  TEST_ENTITIES,
+  createTestDataSource,
+} from '../test/create-test-data-source';
 import { ChannelsModule } from './channels.module';
-
-const ALL_ENTITIES = [User, Channel, RefreshToken, VerificationToken];
 
 describe('ChannelsModule', () => {
   it('should compile with TypeOrmModule.forFeature([Channel]) and ChannelsService', async () => {
     const module = await Test.createTestingModule({
       imports: [
-        TypeOrmModule.forRoot(createTestDataSource(ALL_ENTITIES).options),
+        TypeOrmModule.forRoot(createTestDataSource(TEST_ENTITIES).options),
         ChannelsModule,
       ],
     }).compile();

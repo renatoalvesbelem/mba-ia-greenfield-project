@@ -1,15 +1,12 @@
 import { DataSource, Repository } from 'typeorm';
-import { RefreshToken } from '../auth/entities/refresh-token.entity';
-import { VerificationToken } from '../auth/entities/verification-token.entity';
 import {
   cleanAllTables,
   createTestDataSource,
+  TEST_ENTITIES,
 } from '../test/create-test-data-source';
 import { User } from '../users/entities/user.entity';
 import { ChannelsService } from './channels.service';
 import { Channel } from './entities/channel.entity';
-
-const ALL_ENTITIES = [User, Channel, RefreshToken, VerificationToken];
 
 describe('ChannelsService (integration)', () => {
   let dataSource: DataSource;
@@ -18,7 +15,7 @@ describe('ChannelsService (integration)', () => {
   let channelRepository: Repository<Channel>;
 
   beforeAll(async () => {
-    dataSource = createTestDataSource(ALL_ENTITIES);
+    dataSource = createTestDataSource(TEST_ENTITIES);
     await dataSource.initialize();
     userRepository = dataSource.getRepository(User);
     channelRepository = dataSource.getRepository(Channel);
@@ -87,6 +84,30 @@ describe('ChannelsService (integration)', () => {
 
       const channels = await channelRepository.find();
       expect(channels).toHaveLength(2);
+    });
+  });
+
+  describe('findByUserId', () => {
+    it('returns the channel belonging to the given user', async () => {
+      const user = await createUser();
+      const created = await channelsService.createChannel(
+        user.id,
+        'findbyuser@example.com',
+      );
+
+      const found = await channelsService.findByUserId(user.id);
+
+      expect(found).not.toBeNull();
+      expect(found!.id).toBe(created.id);
+      expect(found!.user_id).toBe(user.id);
+    });
+
+    it('returns null when the user has no channel', async () => {
+      const found = await channelsService.findByUserId(
+        '00000000-0000-0000-0000-000000000000',
+      );
+
+      expect(found).toBeNull();
     });
   });
 });
