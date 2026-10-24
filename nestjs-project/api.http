@@ -118,3 +118,90 @@ Content-Type: {{contentType}}
   "token": "{{resetToken}}",
   "new_password": "new-password123"
 }
+
+
+###
+# ─────────────────────────────────────────────
+# VÍDEOS — UPLOAD MULTIPART DIRETO AO STORAGE (Fase 03)
+# ─────────────────────────────────────────────
+
+@videoPublicId = {{createVideo.response.body.$.public_id}}
+@uploadId = {{createVideo.response.body.$.upload.upload_id}}
+@partUrl = {{partUrls.response.body.$.parts[0].url}}
+# ETag devolvido pelo storage no PUT da parte (cole aqui após o passo 12)
+@partEtag = <etag da parte 1>
+
+### 10. Criar o vídeo (rascunho) e iniciar o upload multipart
+# @name createVideo
+POST {{baseUrl}}/videos
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "title": "Meu primeiro vídeo",
+  "filename": "aula.mp4",
+  "content_type": "video/mp4",
+  "size_bytes": 1048576
+}
+
+
+### 11. Obter URLs pré-assinadas das partes (1 parte para um arquivo pequeno)
+# @name partUrls
+POST {{baseUrl}}/videos/{{videoPublicId}}/upload/part-urls
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "part_numbers": [1]
+}
+
+
+### 12. Enviar a parte direto ao storage (PUT no url retornado — ajuste o caminho do arquivo)
+PUT {{partUrl}}
+Content-Type: video/mp4
+
+< ./aula.mp4
+
+
+### 13. Listar partes já enviadas (retomada)
+GET {{baseUrl}}/videos/{{videoPublicId}}/upload/parts
+Authorization: Bearer {{accessToken}}
+
+
+### 14. Concluir o upload — vídeo vai para "processing" e o job é enfileirado
+POST {{baseUrl}}/videos/{{videoPublicId}}/upload/complete
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "parts": [
+    { "part_number": 1, "etag": "{{partEtag}}" }
+  ]
+}
+
+
+### 15. Consultar o vídeo (dono vê qualquer status; anônimo só "ready")
+GET {{baseUrl}}/videos/{{videoPublicId}}
+Authorization: Bearer {{accessToken}}
+
+
+### 16. Streaming — 302 para URL pré-assinada (o storage responde Range com 206)
+GET {{baseUrl}}/videos/{{videoPublicId}}/stream
+
+
+### 17. Download — 302 para URL pré-assinada com Content-Disposition: attachment
+GET {{baseUrl}}/videos/{{videoPublicId}}/download
+
+
+### 18. Thumbnail gerado pelo worker
+GET {{baseUrl}}/videos/{{videoPublicId}}/thumbnail
+
+
+### 19. Reprocessar um vídeo com status "failed"
+POST {{baseUrl}}/videos/{{videoPublicId}}/processing
+Authorization: Bearer {{accessToken}}
+
+
+### 20. Abortar um upload em andamento (apaga o rascunho)
+DELETE {{baseUrl}}/videos/{{videoPublicId}}/upload
+Authorization: Bearer {{accessToken}}

@@ -13,6 +13,8 @@ docker compose ps   # all services must show status "running"
 Then verify each infrastructure service is actually ready to accept connections — not just running:
 
 - **PostgreSQL:** `docker compose exec db pg_isready -U streamtube` — expect `accepting connections`
+- **MinIO:** `curl -f http://localhost:9000/minio/health/live` — expect HTTP 200
+- **Redis:** `docker compose exec redis redis-cli ping` — expect `PONG`
 
 Only start the NestJS dev server (`npm run start:dev`) when the user **explicitly** asks to run the application — never as part of "start the environment".
 
@@ -34,6 +36,9 @@ docker compose exec nestjs-api npm run start:dev
 Services:
 - `nestjs-api` — NestJS API, port `3000`
 - `db` — PostgreSQL 17, port `5432`, database `streamtube`, user/password `streamtube`
+- `minio` — S3-compatible object storage, API port `9000`, console port `9001`
+- `redis` — Redis 7, port `6379`, backs the `video-processing` BullMQ queue
+- `video-worker` — consumes the `video-processing` queue (FFmpeg metadata/thumbnail extraction), no exposed port
 
 All verification and teardown commands run on the **host machine**:
 
@@ -62,6 +67,8 @@ docker compose down
 npm run start:dev                        # Dev server with hot-reload
 npm run build                            # Compile to dist/
 npm run start:prod                       # Run compiled build
+npm run start:worker:dev                 # Video worker with hot-reload (compiles to dist-worker/)
+npm run start:worker                     # Run the compiled worker build
 
 npm test                                 # Unit tests
 npm run test:watch                       # Unit tests in watch mode
@@ -71,13 +78,27 @@ npm run test:e2e                         # End-to-end tests (always with --runIn
 npx tsc --noEmit                         # Type-check (required before declaring a task done)
 npm run lint                             # ESLint with auto-fix
 npm run format                           # Prettier formatting
+
+npm run openapi:export                   # Regenerate openapi.json from the controllers
 ```
+
+### OpenAPI contract — regenerate after every controller change
+
+`openapi.json` is a committed artifact, not a build output. Whenever a controller, DTO or `@Api*` decorator changes, regenerate and re-sync it in the same change:
+
+```bash
+docker compose exec nestjs-api npm run openapi:export   # in nestjs-project/
+bash scripts/sync-openapi.sh                            # from the repo root, on the host
+```
+
+The second command copies the spec to `next-frontend/openapi.json`, which the frontend's codegen consumes. Both steps are enforced by `.github/workflows/openapi-freshness.yml`: the `backend-spec` job re-runs the export against a PostgreSQL service container and fails if `nestjs-project/openapi.json` differs, and the `spec-and-types` job re-runs the sync plus the frontend codegen and fails if the synced spec or the generated types differ. The export needs the database because TypeORM connects while the providers are built; the queue and the S3 client connect lazily and are not required for it.
 
 ### Host-only commands (Docker / connectivity probes)
 
 ```bash
 docker compose ps
 docker compose logs nestjs-api
+docker compose logs video-worker
 docker compose exec db pg_isready -U streamtube
 curl http://localhost:3000
 ```
@@ -119,7 +140,8 @@ Conventions for **how to write** each kind of test (mocking patterns, AAA struct
 
 These settings are required in `package.json` (jest config) and `test/jest-e2e.json` for the project's tests to work correctly:
 
-- `setupFiles: ["dotenv/config"]` — without this, `.env` is not loaded inside the Jest process. `DB_HOST`, `JWT_SECRET`, etc. fall back to undefined or to the host's `localhost`, breaking container-to-container DNS.
+- `setupFiles: ["dotenv/config", "<rootDir>/test/setup-env.ts"]` — without `dotenv/config`, `.env` is not loaded inside the Jest process. `DB_HOST`, `JWT_SECRET`, etc. fall back to undefined or to the host's `localhost`, breaking container-to-container DNS. `src/test/setup-env.ts` then forces `S3_PUBLIC_ENDPOINT = S3_ENDPOINT` (presigned URLs must be reachable from inside the container), redirects `S3_BUCKET` and `QUEUE_PREFIX` to `streamtube-test` so tests never touch dev data nor get consumed by the real `video-worker`, and honours `TEST_DB_NAME` / `TEST_S3_BUCKET` / `TEST_QUEUE_PREFIX` overrides for isolated parallel runs.
+- `forceExit: true` — the Handlebars adapter of `@nestjs-modules/mailer` loads the native `@css-inline/css-inline` module, which keeps a `CustomGC` handle open and would otherwise block Jest from exiting after the run.
 - `testRegex: '.*\\.(spec|integration-spec)\\.ts$'` — covers both unit (`*.spec.ts`) and integration (`*.integration-spec.ts`) suffixes.
 
 Do not add new test-file suffixes; if a new test type is needed, update the regex deliberately.
@@ -148,6 +170,31 @@ NestJS with standard module structure. Source lives in `src/`, compiled output i
 
 - Each domain feature gets its own module (e.g., `UsersModule`, `VideosModule`) registered in `AppModule`
 - Controllers handle HTTP routing; Services hold business logic; both are scoped to their module
+- `DatabaseModule` (`src/database/database.module.ts`) owns `TypeOrmModule.forRootAsync` and is shared by `AppModule` and `WorkerModule`
+- Two entrypoints share the codebase: `src/main.ts` (HTTP API) and `src/worker.ts` (`WorkerModule` — BullMQ consumer, no controllers)
+
+## Videos (Phase 03)
+
+Upload, processing and playback of videos. Videos belong to the authenticated user's channel (`videos.channel_id → channels.id`) and are addressed publicly by `public_id` (11 URL-safe chars generated in `src/videos/public-id.util.ts`).
+
+Modules:
+- `src/storage/` — `StorageModule` / `StorageService`: S3 client (AWS SDK v3) against MinIO locally. Two clients: `S3_CLIENT` (internal endpoint `S3_ENDPOINT`, used by API and worker) and `S3_PUBLIC_CLIENT` (`S3_PUBLIC_ENDPOINT`, used only to presign URLs handed to browsers — SigV4 binds the host). Ensures the bucket exists on boot. Keys: `videos/{videoId}/original.{ext}` and `videos/{videoId}/thumbnail.jpg`.
+- `src/queue/` — `QueueModule`: `BullModule.forRootAsync` (Redis) + queue `video-processing` with `attempts`/exponential `backoff` from `QUEUE_*`/`VIDEO_PROCESSING_*`. Job name `process-video`, `jobId = video-<videoId>` (dedupe), payload `{ videoId, publicId, storageKey }`.
+- `src/media/` — `MediaModule` / `FfmpegService`: spawns `ffprobe` (JSON metadata) and `ffmpeg` (one JPEG frame to stdout) via `child_process`; both binaries are installed in `Dockerfile.dev`.
+- `src/videos/` — `VideosModule`: entity `Video`, `VideosService`, `VideosController`, `VideoProcessingProducer`, DTOs.
+- `src/video-processing/` — `VideoProcessingModule`: `VideoProcessor` (`WorkerHost`) + `VideoProcessingService`; runs inside the `video-worker` container.
+
+Status lifecycle (`videos.status`): `draft` (created on upload init) → `processing` (upload completed, job enqueued) → `ready` (duration, metadata, thumbnail stored) or `failed` (`processing_error` set after the last attempt; owner can re-enqueue).
+
+Upload flow (10 GB, nothing streams through the API): `POST /videos` creates the draft and opens an S3 multipart upload → `POST /videos/:publicId/upload/part-urls` returns presigned `UploadPart` URLs (client PUTs parts straight to the storage) → `GET /videos/:publicId/upload/parts` lists uploaded parts (resume) → `POST /videos/:publicId/upload/complete` with `{ parts: [{ part_number, etag }] }` completes the multipart, verifies the real size with `HeadObject`, flips to `processing` and enqueues the job → `DELETE /videos/:publicId/upload` aborts and removes the draft.
+
+Playback: `GET /videos/:publicId` (public for `ready`; owner sees any status via optional auth), `GET /videos/:publicId/stream`, `/download` (`Content-Disposition: attachment`) and `/thumbnail` answer `302` to short-lived presigned `GetObject` URLs — range requests (`206`) are served by the storage, not by the API. `POST /videos/:publicId/processing` re-enqueues a `failed` video (owner only).
+
+Limits (env, validated by Joi): `UPLOAD_MAX_SIZE_BYTES` (10 GiB), `UPLOAD_PART_SIZE_BYTES` (64 MiB, 5 MiB–5 GiB), `UPLOAD_PART_URL_TTL_SECONDS` and `PLAYBACK_URL_TTL_SECONDS` (3600), allowed types `video/mp4`, `video/webm`, `video/quicktime`, `video/x-matroska` (`src/config/videos.config.ts`).
+
+Error codes: `VIDEO_NOT_FOUND` 404, `VIDEO_FORBIDDEN` 403, `VIDEO_INVALID_STATE` 409, `VIDEO_TOO_LARGE` 413, `VIDEO_UNSUPPORTED_MEDIA_TYPE` 415, `VIDEO_INVALID_PART_NUMBER` 400, `VIDEO_UPLOAD_INVALID_PARTS` 400, `CHANNEL_NOT_FOUND` 404 — all `DomainException` subclasses in `src/common/exceptions/domain.exception.ts`.
+
+Optional authentication: `JwtAuthGuard` attaches `request.user` on `@Public()` routes when a valid Bearer token is present and stays anonymous otherwise; read it with `@OptionalUser()` (`src/auth/decorators/optional-user.decorator.ts`).
 
 ## Code Conventions
 

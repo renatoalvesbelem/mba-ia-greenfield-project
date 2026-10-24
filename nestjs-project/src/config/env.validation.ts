@@ -21,4 +21,28 @@ export const envValidationSchema = Joi.object({
   MAIL_PORT: Joi.number().default(1025),
   MAIL_FROM: Joi.string().default('"StreamTube" <noreply@streamtube.com>'),
   SWAGGER_ENABLED: Joi.string().valid('true', 'false').default('false'),
+  S3_ENDPOINT: Joi.string().uri().default('http://minio:9000'),
+  S3_PUBLIC_ENDPOINT: Joi.string().uri().optional(),
+  S3_REGION: Joi.string().default('us-east-1'),
+  S3_ACCESS_KEY: Joi.string().required(),
+  S3_SECRET_KEY: Joi.string().required(),
+  S3_BUCKET: Joi.string().default('streamtube-videos'),
+  S3_FORCE_PATH_STYLE: Joi.string().valid('true', 'false').default('true'),
+  REDIS_HOST: Joi.string().default('redis'),
+  REDIS_PORT: Joi.number().port().default(6379),
+  QUEUE_PREFIX: Joi.string().default('streamtube'),
+  VIDEO_PROCESSING_ATTEMPTS: Joi.number().integer().min(1).default(3),
+  VIDEO_PROCESSING_BACKOFF_MS: Joi.number().integer().min(0).default(5000),
+  WORKER_CONCURRENCY: Joi.number().integer().min(1).default(2),
+  UPLOAD_MAX_SIZE_BYTES: Joi.number()
+    .integer()
+    .min(1)
+    .default(10 * 1024 * 1024 * 1024),
+  UPLOAD_PART_SIZE_BYTES: Joi.number()
+    .integer()
+    .min(5 * 1024 * 1024)
+    .max(5 * 1024 * 1024 * 1024)
+    .default(64 * 1024 * 1024),
+  UPLOAD_PART_URL_TTL_SECONDS: Joi.number().integer().min(60).default(3600),
+  PLAYBACK_URL_TTL_SECONDS: Joi.number().integer().min(60).default(3600),
 });

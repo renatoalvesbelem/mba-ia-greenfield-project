@@ -22,11 +22,16 @@ export class JwtAuthGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    if (isPublic) return true;
 
     const request = context
       .switchToHttp()
       .getRequest<{ headers: Record<string, string>; user: unknown }>();
+
+    if (isPublic) {
+      await this.tryAttachUser(request);
+      return true;
+    }
+
     const authHeader = request.headers?.authorization;
 
     if (!authHeader || !authHeader.startsWith(BEARER_PREFIX)) {
@@ -41,6 +46,24 @@ export class JwtAuthGuard implements CanActivate {
       return true;
     } catch {
       throw new UnauthorizedException();
+    }
+  }
+
+  private async tryAttachUser(request: {
+    headers: Record<string, string>;
+    user: unknown;
+  }): Promise<void> {
+    const authHeader = request.headers?.authorization;
+    if (!authHeader || !authHeader.startsWith(BEARER_PREFIX)) {
+      return;
+    }
+
+    const token = authHeader.slice(BEARER_PREFIX.length);
+
+    try {
+      request.user = await this.jwtService.verifyAsync<JwtPayload>(token);
+    } catch {
+      return;
     }
   }
 }
