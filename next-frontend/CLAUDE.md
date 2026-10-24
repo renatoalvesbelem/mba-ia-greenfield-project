@@ -124,7 +124,7 @@ The upstream API publishes an OpenAPI 3.x spec. **Every wire shape in `next-fron
 
 Contract chain: `openapi.json` (committed local copy) → `lib/api/types.gen.ts` (generated, do not edit) → `paths` (typed surface) → consumers (BFF + components + MSW).
 
-CI guard: `.github/workflows/openapi-freshness.yml` blocks merging stale spec/types pairs.
+CI guard: `.github/workflows/openapi-freshness.yml` covers the whole chain in two jobs. `backend-spec` regenerates `nestjs-project/openapi.json` from the controllers and fails on any diff; `spec-and-types` re-runs `bash scripts/sync-openapi.sh` and `npm run openapi:types` and fails on any diff in `openapi.json` or `lib/api/types.gen.ts`. A stale spec, a forgotten sync and stale generated types are all blocked from merging.
 
 Source of decisions: `docs/decisions/technical-decisions-next-frontend-openapi-typing.md` (TD-01…TD-05).
 

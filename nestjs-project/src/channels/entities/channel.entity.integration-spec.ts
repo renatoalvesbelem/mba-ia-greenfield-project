@@ -1,14 +1,11 @@
 import { DataSource, Repository } from 'typeorm';
-import { RefreshToken } from '../../auth/entities/refresh-token.entity';
-import { VerificationToken } from '../../auth/entities/verification-token.entity';
 import {
+  TEST_ENTITIES,
   cleanAllTables,
   createTestDataSource,
 } from '../../test/create-test-data-source';
 import { User } from '../../users/entities/user.entity';
 import { Channel } from './channel.entity';
-
-const ALL_ENTITIES = [User, Channel, RefreshToken, VerificationToken];
 
 describe('Channel entity (integration)', () => {
   let dataSource: DataSource;
@@ -16,7 +13,7 @@ describe('Channel entity (integration)', () => {
   let channelRepository: Repository<Channel>;
 
   beforeAll(async () => {
-    dataSource = createTestDataSource(ALL_ENTITIES);
+    dataSource = createTestDataSource(TEST_ENTITIES);
     await dataSource.initialize();
     userRepository = dataSource.getRepository(User);
     channelRepository = dataSource.getRepository(Channel);

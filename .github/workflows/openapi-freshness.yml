@@ -1,0 +1,108 @@
+# Guards the OpenAPI chain described in nestjs-project/CLAUDE.md and
+# next-frontend/CLAUDE.md:
+#
+#   controllers → nestjs-project/openapi.json → next-frontend/openapi.json
+#                                              → next-frontend/lib/api/types.gen.ts
+#
+# backend-spec   : regenerates nestjs-project/openapi.json from the controllers
+#                  and fails on any diff. Needs only PostgreSQL: TypeORM connects
+#                  while the providers are built; the queue and the S3 client
+#                  connect lazily and are not required for the export.
+# spec-and-types : re-runs scripts/sync-openapi.sh and the frontend codegen and
+#                  fails if the synced spec or the generated types differ.
+#
+# Node versions match the Dockerfile.dev of each subproject.
+
+name: OpenAPI freshness
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  backend-spec:
+    name: backend-spec
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nestjs-project
+    services:
+      db:
+        image: postgres:17
+        env:
+          POSTGRES_USER: streamtube
+          POSTGRES_PASSWORD: streamtube
+          POSTGRES_DB: streamtube
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U streamtube"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: streamtube
+      DB_PASSWORD: streamtube
+      DB_NAME: streamtube
+      JWT_SECRET: ci-only-secret
+      JWT_REFRESH_SECRET: ci-only-refresh-secret
+      MAIL_HOST: localhost
+      MAIL_PORT: 1025
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: ci-only
+      S3_SECRET_KEY: ci-only
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25.6.0
+          cache: npm
+          cache-dependency-path: nestjs-project/package-lock.json
+
+      - run: npm ci
+
+      - name: Regenerate openapi.json from the controllers
+        run: npm run openapi:export
+
+      - name: Fail if the committed spec is stale
+        run: |
+          if ! git diff --exit-code -- openapi.json; then
+            echo "::error file=nestjs-project/openapi.json::openapi.json is stale. Run 'docker compose exec nestjs-api npm run openapi:export' in nestjs-project/ and commit the result."
+            exit 1
+          fi
+
+  spec-and-types:
+    name: spec-and-types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+          cache: npm
+          cache-dependency-path: next-frontend/package-lock.json
+
+      - name: Sync the backend spec into the frontend
+        run: bash scripts/sync-openapi.sh
+
+      - run: npm ci
+        working-directory: next-frontend
+
+      - name: Regenerate the frontend API types
+        run: npm run openapi:types
+        working-directory: next-frontend
+
+      - name: Fail if the synced spec or the generated types are stale
+        run: |
+          if ! git diff --exit-code -- next-frontend/openapi.json next-frontend/lib/api/types.gen.ts; then
+            echo "::error::next-frontend/openapi.json or lib/api/types.gen.ts is stale. Run 'bash scripts/sync-openapi.sh' at the repo root and 'npm run openapi:types' in next-frontend/, then commit the result."
+            exit 1
+          fi
